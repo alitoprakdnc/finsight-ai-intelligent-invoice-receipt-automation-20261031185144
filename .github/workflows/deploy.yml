@@ -1,0 +1,124 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production_deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Determine image tag
+        id: vars
+        run: |
+          GIT_SHA=$(git rev-parse --short HEAD)
+          echo "git_sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "image_tag=$GIT_SHA" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./docker/Dockerfile.backend
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_REGISTRY }}/finsight-backend:${{ steps.vars.outputs.image_tag }}
+            ${{ secrets.DOCKER_REGISTRY }}/finsight-backend:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKER_REGISTRY }}/finsight-backend:cache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_REGISTRY }}/finsight-backend:cache,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./docker/Dockerfile.frontend
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_REGISTRY }}/finsight-frontend:${{ steps.vars.outputs.image_tag }}
+            ${{ secrets.DOCKER_REGISTRY }}/finsight-frontend:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKER_REGISTRY }}/finsight-frontend:cache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_REGISTRY }}/finsight-frontend:cache,mode=max
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Decode kubeconfig
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          mkdir -p $HOME/.kube
+          echo "$KUBE_CONFIG_DATA" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Deploy with Helm
+        env:
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+        run: |
+          set -euo pipefail
+
+          helm repo add stable https://charts.helm.sh/stable || true
+
+          helm upgrade --install finsight \
+            ./helm/finSight \
+            --namespace production \
+            --create-namespace \
+            --set image.backend.repository=${DOCKER_REGISTRY}/finsight-backend \
+            --set image.backend.tag=${IMAGE_TAG} \
+            --set image.frontend.repository=${DOCKER_REGISTRY}/finsight-frontend \
+            --set image.frontend.tag=${IMAGE_TAG} \
+            --set env.NODE_ENV=production \
+            --wait \
+            --timeout 5m
+
+      - name: Post‑deployment health check
+        env:
+          DEPLOY_URL: ${{ secrets.PRODUCTION_URL }}
+        run: |
+          set -euo pipefail
+          echo "Running health check against ${DEPLOY_URL}/api/health"
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${DEPLOY_URL}/api/health")
+            if [ "$STATUS" -eq 200 ]; then
+              echo "✅ Health check succeeded."
+              exit 0
+            fi
+            echo "⚠️ Health check returned $STATUS – retry $i/10 in 15s..."
+            sleep 15
+          done
+          echo "❌ Health check failed after multiple attempts."
+          exit 1

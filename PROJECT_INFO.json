@@ -1,0 +1,240 @@
+{
+  "name": "FinSight AI – Intelligent Invoice & Receipt Automation Platform",
+  "description": "FinSight AI is a SaaS platform that automates the ingestion, OCR, and intelligent data extraction of invoices and receipts for small‑and‑medium businesses. It combines on‑premise OCR, optional LLM‑based validation, secure webhook delivery, and a modern dashboard that syncs with popular accounting tools. The system is built for reliability (health checks, queue monitoring) and security (HMAC‑validated webhooks, secret manager integration).",
+  "category": "Business Automation / FinTech SaaS",
+  "technologies": [
+    "Go (Gin) – backend API",
+    "PostgreSQL – relational storage",
+    "Redis – caching & rate limiting",
+    "Google Cloud Tasks (or RabbitMQ) – async processing",
+    "Tesseract OCR (or Google Vision) – image text extraction",
+    "Ollama / LiteLLM – optional local LLM for validation",
+    "React + Next.js + TypeScript – frontend",
+    "Tailwind CSS – design system",
+    "Docker & Docker‑Compose – development & deployment",
+    "GitHub Actions – CI/CD with queue‑starvation monitoring",
+    "OpenAPI 3.0 – contract documentation"
+  ],
+  "target_users": [
+    "Finance managers at SMBs",
+    "Accountants & bookkeeping services",
+    "Developers building integrations with ERP/accounting software",
+    "Operations teams needing audit‑ready invoice processing"
+  ],
+  "problem": "Manual entry of invoice data is error‑prone, slow, and costly. Existing OCR services lack secure, auditable pipelines and do not provide intelligent validation or easy integration with internal workflows. Teams also struggle to monitor the health of their processing pipelines and to receive real‑time notifications when new documents are processed.",
+  "features": [
+    "Secure multi‑tenant authentication (JWT + RBAC)",
+    "Drag‑and‑drop invoice/receipt upload with preview",
+    "High‑accuracy OCR extraction (image → structured JSON)",
+    "Optional LLM‑based validation & categorisation (e.g., vendor, tax, line items)",
+    "Async processing queue with exponential back‑off and dead‑letter handling",
+    "Webhook endpoint with constant‑time HMAC validation for downstream systems",
+    "Real‑time dashboard: processing stats, spend charts, error logs",
+    "Export to CSV/JSON and native integrations (QuickBooks, Xero via webhooks)",
+    "Health‑check endpoint (/api/health) exposing DB, queue, OCR, LLM status",
+    "OpenAPI 3.0 spec with auto‑generated Swagger UI",
+    "CI pipeline that detects GitHub Actions queue starvation and alerts",
+    "Audit log of all uploads, edits, and webhook deliveries"
+  ],
+  "architecture": "FinSight AI follows a modular, container‑first architecture.\n\n- **Frontend (Next.js)** serves a SPA with server‑side rendering for SEO‑critical pages (login, dashboard). It talks to the backend via a typed OpenAPI client.\n- **Backend (Go + Gin)** exposes a versioned REST API. Requests pass through auth, logging, and recovery middleware. Core routes include health, auth, invoice CRUD, and webhook management.\n- **Processing Pipeline**: Uploaded files are stored in an S3‑compatible bucket (minIO in dev). A message with the file location is pushed to Google Cloud Tasks (or RabbitMQ). A worker service pulls the task, runs OCR, optionally calls the LLM service, persists structured data, and triggers configured webhooks.\n- **Data Layer**: PostgreSQL stores users, invoices (metadata + extracted JSON), webhook subscriptions, and audit logs. Migrations are managed with golang‑migrate.\n- **Cache**: Redis holds session tokens, rate‑limit counters, and short‑lived OCR results.\n- **Security**: Secrets (API keys, DB passwords) are loaded from a YAML config that can be overridden by environment variables or Google Secret Manager. Webhook payloads are signed with HMAC‑SHA256 using a per‑subscription secret.\n- **Observability**: Structured logging (Zap), Prometheus metrics endpoint, and the /api/health composite check. GitHub Actions workflow includes a step that queries the Actions queue length; if it exceeds a threshold, a Slack alert is sent.\n- **Deployment**: Docker‑Compose for local dev; Helm charts (not listed) for Kubernetes production. All services are stateless, enabling horizontal scaling.\n- **API Contract**: OpenAPI 3.0 spec lives in `internal/openapi/openapi.yaml` and is served via Swagger UI at `/docs`.",
+  "design_system": "FinSight AI uses a clean, enterprise‑grade design system built on Tailwind CSS.\n\n- **Typography**: Inter (400/500/600) for body, headings, and UI controls.\n- **Color Palette**: Primary #0F62FE, secondary #6F6F6F, success #24A148, danger #DA1E28, background #F4F4F4, surface #FFFFFF, with dark‑mode support via CSS variables.\n- **Spacing**: 4‑px base unit, consistent padding/margin using Tailwind's `space-x-` utilities.\n- **Components**: Card, Table, Modal, Toast, Avatar, FileUploader, Chart (recharts), and a responsive Sidebar navigation.\n- **Interaction States**: Focus rings, hover shadows, disabled opacity, loading spinners.\n- **Responsive Layout**: 3‑column layout on desktop, collapsible sidebar on tablet, stacked mobile view with bottom navigation for key actions.\n- **Accessibility**: ARIA labels, keyboard navigation, color‑contrast compliance.\n- **Theming**: Light/Dark toggle stored in user preferences.\nAll components are typed with TypeScript and exported from `src/components/` for reuse.",
+  "testing": "Comprehensive testing strategy:\n\n- **Backend**: Go unit tests for services (OCR, LLM, webhook signer) using `testing` and `testify`. Integration tests spin up a PostgreSQL container via `testcontainers-go` to verify DB interactions. End‑to‑end API tests with `httptest` and OpenAPI contract validation.\n- **Worker**: Table‑driven tests for queue processing, including failure and dead‑letter scenarios.\n- **Frontend**: Jest + React Testing Library for component unit tests. Cypress for end‑to‑end flows (login, upload, dashboard refresh, webhook receipt). Visual regression via Chromatic (optional).\n- **CI**: GitHub Actions runs lint, unit, integration, and Cypress tests on each PR. A dedicated job monitors the GitHub Actions queue length; if > 50 pending jobs, it fails the pipeline and posts a Slack alert.\n- **Performance**: Load testing of the upload endpoint with k6 scripts (not listed) to ensure scalability.\n- **Security**: Static analysis with `gosec` and `npm audit`. HMAC validation tests cover timing‑attack resistance.\nAll test scripts are invoked from the `scripts/` directory.",
+  "files": [
+    {
+      "path": "backend/cmd/server/main.go",
+      "purpose": "Application entry point; loads config, initializes DB, Redis, router, and starts HTTP server with graceful shutdown."
+    },
+    {
+      "path": "backend/internal/config/config.go",
+      "purpose": "Typed configuration loader; reads YAML, environment overrides, and integrates with Google Secret Manager."
+    },
+    {
+      "path": "backend/internal/router/router.go",
+      "purpose": "Defines all API routes, groups (auth, invoices, webhook, health), and attaches middleware."
+    },
+    {
+      "path": "backend/internal/middleware/auth.go",
+      "purpose": "JWT authentication middleware; extracts user ID, loads roles, and injects into request context."
+    },
+    {
+      "path": "backend/internal/middleware/logger.go",
+      "purpose": "Structured request logger using Zap; logs method, path, status, latency, and user ID."
+    },
+    {
+      "path": "backend/internal/middleware/recovery.go",
+      "purpose": "Global panic recovery; returns 500 with error ID and logs stack trace."
+    },
+    {
+      "path": "backend/internal/handler/health.go",
+      "purpose": "Implements /api/health; aggregates DB, Redis, OCR, LLM, and queue health checks into JSON response."
+    },
+    {
+      "path": "backend/internal/handler/invoice.go",
+      "purpose": "Handlers for invoice CRUD: upload (multipart), list (pagination), detail, and delete. Validates input and triggers async processing."
+    },
+    {
+      "path": "backend/internal/handler/webhook.go",
+      "purpose": "Endpoints to create, list, delete webhook subscriptions; validates HMAC secret length and stores in DB."
+    },
+    {
+      "path": "backend/internal/service/ocr/ocr.go",
+      "purpose": "Wrapper around Tesseract (or Google Vision) that receives a file path, returns raw text and confidence scores."
+    },
+    {
+      "path": "backend/internal/service/llm/processor.go",
+      "purpose": "Calls local Ollama/LiteLLM model to validate and enrich OCR output (e.g., vendor name, tax ID, line‑item parsing)."
+    },
+    {
+      "path": "backend/internal/service/queue/worker.go",
+      "purpose": "Background worker that pulls tasks from Cloud Tasks/RabbitMQ, runs OCR → optional LLM → DB persistence → webhook dispatch."
+    },
+    {
+      "path": "backend/internal/model/invoice.go",
+      "purpose": "GORM/SQLX struct defining invoice table (ID, user_id, file_url, raw_text, extracted_json, status, timestamps)."
+    },
+    {
+      "path": "backend/internal/model/user.go",
+      "purpose": "User struct with fields for email, hashed password, role (admin/user), and preferences (theme, language)."
+    },
+    {
+      "path": "backend/internal/repo/invoice_repo.go",
+      "purpose": "Data‑access layer for invoices: create, update status, fetch by user, pagination, and audit logging."
+    },
+    {
+      "path": "backend/internal/repo/user_repo.go",
+      "purpose": "User CRUD, password hashing (bcrypt), role lookup, and token revocation support."
+    },
+    {
+      "path": "backend/internal/db/migrations/001_create_users.sql",
+      "purpose": "SQL migration to create `users` table with constraints and indexes."
+    },
+    {
+      "path": "backend/internal/db/migrations/002_create_invoices.sql",
+      "purpose": "SQL migration to create `invoices` table, JSONB column for extracted data, and foreign key to users."
+    },
+    {
+      "path": "backend/internal/db/db.go",
+      "purpose": "Database connection helper; sets up connection pool, runs migrations on startup, provides `*sql.DB` instance."
+    },
+    {
+      "path": "backend/internal/validation/hmac.go",
+      "purpose": "Constant‑time HMAC‑SHA256 verification function for inbound webhook payloads to mitigate timing attacks."
+    },
+    {
+      "path": "backend/internal/validation/schema.go",
+      "purpose": "JSON schema validators for incoming API payloads (invoice metadata, webhook config) using gojsonschema."
+    },
+    {
+      "path": "backend/internal/logger/logger.go",
+      "purpose": "Centralized logger configuration (Zap) with production and development encoders."
+    },
+    {
+      "path": "backend/internal/health/health.go",
+      "purpose": "Reusable health‑check utilities for DB, Redis, OCR service, LLM service, and task queue."
+    },
+    {
+      "path": "backend/internal/openapi/openapi.yaml",
+      "purpose": "OpenAPI 3.0 contract describing all endpoints, schemas, authentication, and examples; served via Swagger UI."
+    },
+    {
+      "path": "frontend/src/pages/_app.tsx",
+      "purpose": "Next.js custom App component; injects global Tailwind CSS, ThemeProvider, and Auth context."
+    },
+    {
+      "path": "frontend/src/pages/index.tsx",
+      "purpose": "Dashboard page showing processing stats, spend charts, recent invoices, and quick upload button."
+    },
+    {
+      "path": "frontend/src/pages/login.tsx",
+      "purpose": "Login form with email/password, client‑side validation, error handling, and JWT storage in HttpOnly cookie."
+    },
+    {
+      "path": "frontend/src/pages/invoices.tsx",
+      "purpose": "Paginated table view of user's invoices; supports search, filters (status, date), and bulk actions."
+    },
+    {
+      "path": "frontend/src/pages/invoice/[id].tsx",
+      "purpose": "Invoice detail view; displays original image, extracted JSON in a pretty table, and allows manual correction."
+    },
+    {
+      "path": "frontend/src/components/Layout.tsx",
+      "purpose": "Responsive layout component with sidebar navigation, top bar, and theme toggle."
+    },
+    {
+      "path": "frontend/src/components/InvoiceUpload.tsx",
+      "purpose": "Drag‑and‑drop file uploader with preview, progress bar, and client‑side file type/size validation."
+    },
+    {
+      "path": "frontend/src/components/InvoiceTable.tsx",
+      "purpose": "Reusable table component built with React Table; supports sorting, pagination, and row actions."
+    },
+    {
+      "path": "frontend/src/components/InvoiceDetail.tsx",
+      "purpose": "Displays extracted invoice data; includes editable fields and a 'Save Corrections' button."
+    },
+    {
+      "path": "frontend/src/components/ChartSummary.tsx",
+      "purpose": "Spend summary charts using Recharts (bar for vendors, line for monthly totals)."
+    },
+    {
+      "path": "frontend/src/components/Modal.tsx",
+      "purpose": "Generic modal component with accessible focus trap, used for confirmations and form dialogs."
+    },
+    {
+      "path": "frontend/src/styles/theme.ts",
+      "purpose": "Tailwind theme extension; defines custom colors, shadows, and dark‑mode variables."
+    },
+    {
+      "path": "frontend/src/styles/globals.css",
+      "purpose": "Base CSS imports, Tailwind directives, and global resets."
+    },
+    {
+      "path": "frontend/src/hooks/useAuth.ts",
+      "purpose": "Custom hook that provides auth state, login, logout, and token refresh logic."
+    },
+    {
+      "path": "frontend/src/hooks/useInvoices.ts",
+      "purpose": "Hook to fetch, cache, and mutate invoice list via SWR; handles loading and error states."
+    },
+    {
+      "path": "frontend/src/utils/api.ts",
+      "purpose": "Typed wrapper around fetch; automatically adds JWT cookie, handles JSON parsing, and centralizes error handling."
+    },
+    {
+      "path": "frontend/src/utils/validation.ts",
+      "purpose": "Client‑side validation helpers for email, password strength, and file size/type."
+    },
+    {
+      "path": "docker/Dockerfile.backend",
+      "purpose": "Multi‑stage build for Go backend; compiles binary, copies migrations, and sets entrypoint."
+    },
+    {
+      "path": "docker/Dockerfile.frontend",
+      "purpose": "Node.js build for Next.js; installs deps, runs `next build`, and serves with `next start`."
+    },
+    {
+      "path": "docker/docker-compose.yml",
+      "purpose": "Local development stack: backend, frontend, PostgreSQL, Redis, MinIO (S3), and a task‑queue worker."
+    },
+    {
+      "path": "docker/.dockerignore",
+      "purpose": "Excludes node_modules, vendor, and local build artifacts from Docker context."
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "purpose": "GitHub Actions CI pipeline: lint, unit tests (Go & TS), integration tests, OpenAPI validation, and queue‑starvation check."
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "purpose": "CD workflow that builds Docker images, pushes to registry, and triggers Helm upgrade on Kubernetes cluster."
+    },
+    {
+      "path": "config/config.yaml",
+      "purpose": "Example configuration file with placeholders for DB DSN, Redis URL, S3 bucket, LLM endpoint, and secret manager settings."
+    },
+    {
+      "path": "scripts/migrate.sh",
+      "purpose": "Convenient script to run `golang-migrate` against the local Docker PostgreSQL instance."
+    }
+  ]
+}

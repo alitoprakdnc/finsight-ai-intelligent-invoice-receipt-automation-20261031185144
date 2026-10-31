@@ -1,0 +1,302 @@
+# config/config.yaml
+# ----------------------------------------------------------------------
+# FinSight AI – Central configuration file
+# ----------------------------------------------------------------------
+# This file provides default values and placeholders for all runtime
+# configuration options. Values can be overridden by environment
+# variables (see internal/config/config.go) or by a secret manager
+# (Google Secret Manager, Vault, etc.).
+#
+# Naming convention:
+#   - Use snake_case for keys.
+#   - Placeholders are expressed as ${ENV_VAR_NAME} and will be
+#     replaced at startup by the config loader.
+# ----------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# Server settings
+# ----------------------------------------------------------------------
+server:
+  # HTTP server bind address (host:port). Use 0.0.0.0 for containerized
+  # deployments.
+  address: "0.0.0.0:8080"
+
+  # Graceful shutdown timeout (seconds). Allows in‑flight requests to
+  # complete before the process exits.
+  shutdown_timeout_seconds: 15
+
+  # Enable HTTP/2 (requires TLS termination upstream or in‑sidecar).
+  enable_http2: false
+
+# ----------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------
+logging:
+  # Log level: debug, info, warn, error, fatal, panic
+  level: "info"
+
+  # Output format: json (structured) or console (human readable)
+  format: "json"
+
+  # Enable stack traces on error level logs
+  enable_stacktrace: true
+
+# ----------------------------------------------------------------------
+# Database (PostgreSQL)
+# ----------------------------------------------------------------------
+database:
+  # Data Source Name – see lib/pq format.
+  # Example: "postgres://user:password@host:5432/finsight?sslmode=disable"
+  dsn: "${DB_DSN}"
+
+  # Maximum open connections in the pool.
+  max_open_conns: 25
+
+  # Maximum idle connections in the pool.
+  max_idle_conns: 5
+
+  # Connection max lifetime (seconds). Helps recycle stale connections.
+  conn_max_lifetime_seconds: 300
+
+  # Run migrations on startup (true for prod, false for tests where migrations
+  # are handled separately).
+  run_migrations: true
+
+# ----------------------------------------------------------------------
+# Redis (caching, rate limiting, session store)
+# ----------------------------------------------------------------------
+redis:
+  # URL format: redis://[:password@]host:port[/db]
+  url: "${REDIS_URL}"
+
+  # Connection pool size.
+  pool_size: 20
+
+  # Minimum idle connections.
+  min_idle_conns: 5
+
+  # Read/write timeout (seconds).
+  read_timeout_seconds: 2
+  write_timeout_seconds: 2
+
+# ----------------------------------------------------------------------
+# Object storage (S3‑compatible, MinIO in dev)
+# ----------------------------------------------------------------------
+storage:
+  # Endpoint URL (e.g., https://s3.amazonaws.com or http://minio:9000)
+  endpoint: "${S3_ENDPOINT}"
+
+  # Access key / secret key – can be sourced from secret manager.
+  access_key: "${S3_ACCESS_KEY}"
+  secret_key: "${S3_SECRET_KEY}"
+
+  # Bucket name where raw uploads are stored.
+  bucket: "finsight-uploads"
+
+  # Use TLS for the endpoint (true for AWS, false for local MinIO).
+  use_tls: true
+
+  # Optional: region (required by some S3 providers).
+  region: "${S3_REGION}"
+
+  # Optional: custom path style (true for MinIO, false for AWS).
+  force_path_style: false
+
+# ----------------------------------------------------------------------
+# OCR service configuration
+# ----------------------------------------------------------------------
+ocr:
+  # Choose implementation: "tesseract" or "google_vision"
+  provider: "tesseract"
+
+  # Tesseract specific options.
+  tesseract:
+    # Path to the tesseract binary inside the container.
+    binary_path: "/usr/bin/tesseract"
+
+    # Language packs to load (comma‑separated, e.g., "eng,spa").
+    languages: "eng"
+
+    # Timeout for OCR processing (seconds). Prevents runaway jobs.
+    timeout_seconds: 30
+
+  # Google Vision API configuration (used only when provider = "google_vision").
+  google_vision:
+    # Service account JSON key (base64‑encoded or path). Prefer secret manager.
+    credentials_json: "${GOOGLE_VISION_CREDENTIALS_JSON}"
+    # Optional endpoint override for testing.
+    endpoint: ""
+
+# ----------------------------------------------------------------------
+# LLM validation service configuration (optional)
+# ----------------------------------------------------------------------
+llm:
+  # Enable LLM validation (true = call Ollama/LiteLLM, false = skip).
+  enabled: false
+
+  # HTTP endpoint of the local LLM server.
+  endpoint: "http://ollama:11434/api/generate"
+
+  # Model name to use for validation (must be available on the server).
+  model: "llama3.1:8b"
+
+  # Request timeout (seconds).
+  timeout_seconds: 15
+
+  # Maximum tokens to generate.
+  max_tokens: 1024
+
+  # System prompt that guides the validation logic.
+  system_prompt: |
+    You are an invoice validation assistant. Extract structured data from the raw OCR text,
+    including vendor name, invoice number, date, tax identification, line items (description,
+    quantity, unit price, total), and total amount. Return a JSON object matching the
+    schema defined in the API contract.
+
+# ----------------------------------------------------------------------
+# Task queue configuration (Google Cloud Tasks or RabbitMQ)
+# ----------------------------------------------------------------------
+queue:
+  # Provider: "cloud_tasks" or "rabbitmq"
+  provider: "cloud_tasks"
+
+  # Cloud Tasks specific settings.
+  cloud_tasks:
+    # GCP project ID.
+    project_id: "${GCP_PROJECT_ID}"
+    # Location/region where the queue resides.
+    location: "us-central1"
+    # Queue name (must exist in Cloud Tasks).
+    queue_name: "invoice-processing"
+
+    # Optional: service account email used for authentication.
+    service_account_email: "${GCP_SERVICE_ACCOUNT_EMAIL}"
+
+  # RabbitMQ specific settings (used when provider = "rabbitmq").
+  rabbitmq:
+    url: "${RABBITMQ_URL}"
+    # Name of the queue that workers will consume.
+    queue_name: "invoice_processing"
+    # Prefetch count for consumer.
+    prefetch_count: 10
+
+# ----------------------------------------------------------------------
+# Webhook security
+# ----------------------------------------------------------------------
+webhook:
+  # HMAC algorithm used for signing payloads.
+  hmac_algorithm: "HS256"
+
+  # Default secret length (bytes) for newly created subscriptions.
+  secret_length_bytes: 32
+
+  # Maximum allowed payload size (bytes) to protect against abuse.
+  max_payload_size_bytes: 1048576  # 1 MiB
+
+# ----------------------------------------------------------------------
+# Health check configuration
+# ----------------------------------------------------------------------
+health:
+  # Interval (seconds) between internal component health probes.
+  probe_interval_seconds: 10
+
+  # Timeout (seconds) for each individual health check.
+  probe_timeout_seconds: 5
+
+# ----------------------------------------------------------------------
+# Secret manager integration (Google Secret Manager by default)
+# ----------------------------------------------------------------------
+secret_manager:
+  # Provider: "google" or "none" (disable secret manager).
+  provider: "google"
+
+  # Google Secret Manager specific options.
+  google:
+    # Project ID where secrets are stored.
+    project_id: "${GCP_PROJECT_ID}"
+    # Optional: custom endpoint for testing (e.g., emulator).
+    endpoint: ""
+
+# ----------------------------------------------------------------------
+# Feature toggles (runtime switches)
+# ----------------------------------------------------------------------
+features:
+  # Enable experimental UI components.
+  experimental_ui: false
+
+  # Enable audit logging of all API requests (in addition to standard logs).
+  audit_logging: true
+
+  # Enable Prometheus metrics endpoint (/metrics).
+  prometheus_metrics: true
+
+# ----------------------------------------------------------------------
+# Rate limiting (per‑IP and per‑user)
+# ----------------------------------------------------------------------
+rate_limit:
+  # Requests per minute per IP address.
+  ip_limit_per_minute: 120
+
+  # Requests per minute per authenticated user.
+  user_limit_per_minute: 300
+
+  # Redis key prefix for rate‑limit counters.
+  redis_key_prefix: "rlimit"
+
+# ----------------------------------------------------------------------
+# CORS configuration (frontend runs on a different origin in prod)
+# ----------------------------------------------------------------------
+cors:
+  # Allowed origins (comma‑separated). Use "*" for development only.
+  allowed_origins: "https://app.finsight.ai,https://staging.finsight.ai"
+  # Allowed HTTP methods.
+  allowed_methods: "GET,POST,PUT,DELETE,OPTIONS"
+  # Allowed headers.
+  allowed_headers: "Authorization,Content-Type,Accept"
+  # Expose additional headers to the client.
+  exposed_headers: "X-Request-ID"
+  # Whether to allow credentials (cookies, auth headers).
+  allow_credentials: true
+
+# ----------------------------------------------------------------------
+# Session / JWT configuration
+# ----------------------------------------------------------------------
+auth:
+  # JWT signing method (HS256, RS256, etc.).
+  signing_method: "HS256"
+
+  # Secret used for HS256 signing (base64‑encoded). Prefer secret manager.
+  signing_secret: "${JWT_SIGNING_SECRET}"
+
+  # RSA public/private keys for RS256 (optional, PEM encoded strings).
+  rsa_private_key: "${JWT_RSA_PRIVATE_KEY}"
+  rsa_public_key: "${JWT_RSA_PUBLIC_KEY}"
+
+  # Token expiration (seconds).
+  access_token_ttl_seconds: 3600
+  refresh_token_ttl_seconds: 2592000  # 30 days
+
+  # Cookie settings for HttpOnly JWT storage.
+  cookie:
+    name: "finsight_jwt"
+    http_only: true
+    secure: true
+    same_site: "Lax"
+    path: "/"
+    max_age_seconds: 3600
+
+# ----------------------------------------------------------------------
+# Email / Notification service (optional, for alerts)
+# ----------------------------------------------------------------------
+notification:
+  email:
+    enabled: false
+    smtp_host: "${SMTP_HOST}"
+    smtp_port: 587
+    smtp_user: "${SMTP_USER}"
+    smtp_password: "${SMTP_PASSWORD}"
+    from_address: "no-reply@finsight.ai"
+    # Template directory (relative to project root).
+    templates_path: "internal/notification/email/templates"
+
+# End of config file.

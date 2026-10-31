@@ -1,0 +1,669 @@
+openapi: 3.0.3
+info:
+  title: FinSight AI – Intelligent Invoice & Receipt Automation Platform
+  description: |
+    REST API for FinSight AI SaaS. Provides authentication, health checks, invoice upload & management,
+    webhook subscription handling and audit‑ready endpoints. All endpoints are versioned under `/api`.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8080/api
+    description: Local development server
+  - url: https://api.finsight.ai/api
+    description: Production server
+tags:
+  - name: Auth
+    description: Authentication and token management
+  - name: Health
+    description: Service health and dependency checks
+  - name: Invoices
+    description: Upload, retrieve, update and delete invoices
+  - name: Webhooks
+    description: Manage webhook subscriptions for downstream notifications
+paths:
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Authenticate a user and obtain a JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: user@example.com
+              password: secret123
+      responses:
+        '200':
+          description: Successful authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                token_type: Bearer
+                expires_in: 3600
+                user:
+                  id: 42
+                  email: user@example.com
+                  role: user
+                  preferences:
+                    theme: light
+                    language: en
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Composite health check for all dependencies
+      security: []
+      responses:
+        '200':
+          description: All systems healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                components:
+                  database:
+                    status: ok
+                    latency_ms: 12
+                  redis:
+                    status: ok
+                    latency_ms: 3
+                  ocr:
+                    status: ok
+                    latency_ms: 45
+                  llm:
+                    status: degraded
+                    latency_ms: 210
+                  queue:
+                    status: ok
+                    pending_tasks: 4
+        '503':
+          description: One or more components unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /invoices:
+    post:
+      tags:
+        - Invoices
+      summary: Upload a new invoice or receipt for processing
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InvoiceUploadRequest'
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, application/pdf
+      responses:
+        '202':
+          description: Upload accepted, processing queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceUploadResponse'
+              example:
+                id: "c3f5a1d2-7b9e-4f2a-9c1e-5d6b7a8c9d0e"
+                status: pending
+                message: "Invoice received and queued for processing."
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '413':
+          $ref: '#/components/responses/RequestEntityTooLargeError'
+    get:
+      tags:
+        - Invoices
+      summary: List invoices for the authenticated user
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          description: Filter by processing status
+          required: false
+          schema:
+            $ref: '#/components/schemas/InvoiceStatus'
+        - name: start_date
+          in: query
+          description: ISO‑8601 start date filter (inclusive)
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          description: ISO‑8601 end date filter (inclusive)
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: q
+          in: query
+          description: Free‑text search across vendor name, invoice number, etc.
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated list of invoices
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceListResponse'
+              example:
+                total: 124
+                page: 1
+                limit: 20
+                items:
+                  - id: "c3f5a1d2-7b9e-4f2a-9c1e-5d6b7a8c9d0e"
+                    file_url: "https://minio.local/finsight/invoices/12345.pdf"
+                    status: completed
+                    extracted_json:
+                      vendor: "Acme Corp"
+                      invoice_number: "INV-2024-001"
+                      total_amount: 1245.67
+                      tax: 124.57
+                      line_items:
+                        - description: "Consulting services"
+                          quantity: 1
+                          unit_price: 1245.67
+                    created_at: "2024-10-01T12:34:56Z"
+                    updated_at: "2024-10-01T12:38:10Z"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+  /invoices/{invoiceId}:
+    parameters:
+      - $ref: '#/components/parameters/InvoiceIdPath'
+    get:
+      tags:
+        - Invoices
+      summary: Retrieve detailed information for a single invoice
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Invoice detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceDetail'
+              example:
+                id: "c3f5a1d2-7b9e-4f2a-9c1e-5d6b7a8c9d0e"
+                user_id: 42
+                file_url: "https://minio.local/finsight/invoices/12345.pdf"
+                raw_text: "Acme Corp Invoice #INV-2024-001 ..."
+                extracted_json:
+                  vendor: "Acme Corp"
+                  invoice_number: "INV-2024-001"
+                  total_amount: 1245.67
+                  tax: 124.57
+                  line_items:
+                    - description: "Consulting services"
+                      quantity: 1
+                      unit_price: 1245.67
+                status: completed
+                created_at: "2024-10-01T12:34:56Z"
+                updated_at: "2024-10-01T12:38:10Z"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    patch:
+      tags:
+        - Invoices
+      summary: Apply manual corrections to extracted data
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvoiceCorrectionRequest'
+            example:
+              extracted_json:
+                vendor: "Acme Corp"
+                invoice_number: "INV-2024-001"
+                total_amount: 1245.67
+                tax: 124.57
+                line_items:
+                  - description: "Consulting services"
+                    quantity: 1
+                    unit_price: 1245.67
+      responses:
+        '200':
+          description: Corrections saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceDetail'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    delete:
+      tags:
+        - Invoices
+      summary: Delete an invoice and its associated data
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Invoice deleted successfully (no content)
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+  /webhooks:
+    post:
+      tags:
+        - Webhooks
+      summary: Register a new webhook subscription
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookCreateRequest'
+            example:
+              target_url: "https://example.com/finsight/webhook"
+              secret: "a1b2c3d4e5f6g7h8i9j0"
+              events:
+                - invoice.completed
+                - invoice.failed
+      responses:
+        '201':
+          description: Webhook subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+              example:
+                id: "b7e2d9f1-3c4a-4f5b-8e6a-9d0c1b2a3f4e"
+                target_url: "https://example.com/finsight/webhook"
+                secret: "a1b2c3d4e5f6g7h8i9j0"
+                events:
+                  - invoice.completed
+                  - invoice.failed
+                created_at: "2024-10-01T13:00:00Z"
+                updated_at: "2024-10-01T13:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    get:
+      tags:
+        - Webhooks
+      summary: List all webhook subscriptions for the authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of webhook subscriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+  /webhooks/{webhookId}:
+    parameters:
+      - $ref: '#/components/parameters/WebhookIdPath'
+    get:
+      tags:
+        - Webhooks
+      summary: Retrieve a single webhook subscription
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Webhook subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    delete:
+      tags:
+        - Webhooks
+      summary: Delete a webhook subscription
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Subscription deleted
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      description: Page number (starting at 1)
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    LimitParam:
+      name: limit
+      in: query
+      description: Number of items per page
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    InvoiceIdPath:
+      name: invoiceId
+      in: path
+      required: true
+      description: UUID of the invoice
+      schema:
+        type: string
+        format: uuid
+    WebhookIdPath:
+      name: webhookId
+      in: path
+      required: true
+      description: UUID of the webhook subscription
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT token
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Seconds until token expiration
+        user:
+          $ref: '#/components/schemas/User'
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, user]
+        preferences:
+          $ref: '#/components/schemas/UserPreferences'
+    UserPreferences:
+      type: object
+      properties:
+        theme:
+          type: string
+          enum: [light, dark, system]
+        language:
+          type: string
+          example: en
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        components:
+          type: object
+          properties:
+            database:
+              $ref: '#/components/schemas/HealthComponent'
+            redis:
+              $ref: '#/components/schemas/HealthComponent'
+            ocr:
+              $ref: '#/components/schemas/HealthComponent'
+            llm:
+              $ref: '#/components/schemas/HealthComponent'
+            queue:
+              $ref: '#/components/schemas/QueueHealthComponent'
+    HealthComponent:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        latency_ms:
+          type: integer
+    QueueHealthComponent:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        pending_tasks:
+          type: integer
+    InvoiceUploadRequest:
+      type: object
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+        metadata:
+          type: object
+          description: Optional free‑form metadata supplied by the client
+          additionalProperties:
+            type: string
+    InvoiceUploadResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/InvoiceStatus'
+        message:
+          type: string
+    InvoiceStatus:
+      type: string
+      enum: [pending, processing, completed, failed]
+    InvoiceListResponse:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InvoiceSummary'
+    InvoiceSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        file_url:
+          type: string
+          format: uri
+        status:
+          $ref: '#/components/schemas/InvoiceStatus'
+        extracted_json:
+          type: object
+          nullable: true
+          description: Populated when status is `completed`
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    InvoiceDetail:
+      allOf:
+        - $ref: '#/components/schemas/InvoiceSummary'
+        - type: object
+          properties:
+            user_id:
+              type: integer
+            raw_text:
+              type: string
+            extracted_json:
+              type: object
+    InvoiceCorrectionRequest:
+      type: object
+      required:
+        - extracted_json
+      properties:
+        extracted_json:
+          type: object
+          description: Full corrected JSON payload
+    WebhookCreateRequest:
+      type: object
+      required:
+        - target_url
+        - events
+      properties:
+        target_url:
+          type: string
+          format: uri
+        secret:
+          type: string
+          description: Optional HMAC secret; if omitted a server‑generated secret will be returned
+        events:
+          type: array
+          items:
+            type: string
+            enum:
+              - invoice.completed
+              - invoice.failed
+              - invoice.created
+    WebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        target_url:
+          type: string
+          format: uri
+        secret:
+          type: string
+          description: HMAC secret used to sign payloads
+        events:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+  responses:
+    BadRequestError:
+      description: Invalid request payload or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: 400
+            message: "Validation failed for field 'email': must be a valid email address."
+    UnauthorizedError:
+      description: Authentication required or token invalid/expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: 401
+            message: "Invalid or missing authentication token."
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: 404
+            message: "Invoice with ID 'c3f5a1d2-...' not found."
+    TooManyRequestsError:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: 429
+            message: "Too many requests, please try again later."
+    RequestEntityTooLargeError:
+      description: Uploaded file exceeds allowed size
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: 413
+            message: "File size exceeds the maximum allowed limit of 10 MB."
+  examples: {}

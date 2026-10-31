@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+
+############################
+# Builder stage
+############################
+FROM golang:1.22-alpine AS builder
+
+# Install only the packages needed for building the binary
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Cache module download
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the entire source tree
+COPY . .
+
+# Build the binary (static, no CGO)
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
+RUN go build -ldflags="-s -w" -o /app/finsight-backend ./backend/cmd/server
+
+############################
+# Runtime stage
+############################
+FROM alpine:3.19 AS runtime
+
+# Add certificates for outbound TLS (e.g., S3, Google APIs)
+RUN apk add --no-cache ca-certificates
+
+# Create a non‑root user for security
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /app
+
+# Copy the compiled binary
+COPY --from=builder /app/finsight-backend /usr/local/bin/finsight-backend
+
+# Copy database migrations (required at runtime)
+COPY --from=builder /src/backend/internal/db/migrations ./migrations
+
+# Optional: copy a default config file (can be overridden at runtime)
+COPY config/config.yaml ./config.yaml
+
+# Adjust ownership
+RUN chown -R appuser:appgroup /app && \
+    chmod +x /usr/local/bin/finsight-backend
+
+USER appuser
+
+# The backend listens on 8080 (configurable via env)
+EXPOSE 8080
+
+# Basic health‑check using the public health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:8080/api/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/finsight-backend"]

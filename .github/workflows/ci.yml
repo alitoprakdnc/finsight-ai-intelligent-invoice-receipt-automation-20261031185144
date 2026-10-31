@@ -1,0 +1,281 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Static Analysis
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max_old_space_size=4096
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.59.1
+
+      - name: Run Go linters
+        run: |
+          golangci-lint run ./... --timeout 5m
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Run ESLint & Prettier
+        working-directory: ./frontend
+        run: |
+          npx eslint . --ext .ts,.tsx --max-warnings=0
+          npx prettier --check .
+
+  test-backend:
+    name: Backend Unit & Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+          POSTGRES_DB: test_db
+        ports: [5432:5432]
+        options: >-
+          --health-cmd="pg_isready -U test_user"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      minio:
+        image: minio/minio:RELEASE.2024-07-23T21-41-13Z
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports: [9000:9000]
+        options: >-
+          server /data
+          --health-cmd="curl -f http://localhost:9000/minio/health/live"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DB_DSN: "postgres://test_user:test_pass@localhost:5432/test_db?sslmode=disable"
+      REDIS_URL: "redis://localhost:6379/0"
+      S3_ENDPOINT: "http://localhost:9000"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      S3_BUCKET: "finsight-dev"
+      OCR_SERVICE: "mock"
+      LLM_SERVICE: "mock"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for PostgreSQL..."
+          while ! pg_isready -h localhost -p 5432 -U test_user; do sleep 1; done
+          echo "Waiting for Redis..."
+          while ! redis-cli -h localhost -p 6379 ping | grep PONG; do sleep 1; done
+          echo "Waiting for MinIO..."
+          while ! curl -s http://localhost:9000/minio/health/live | grep 'ok'; do sleep 1; done
+
+      - name: Run backend unit tests
+        run: |
+          go test ./... -v -coverprofile=coverage.out -covermode=atomic ./backend/...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          flags: backend
+          name: codecov-backend
+          fail_ci_if_error: true
+
+  test-frontend:
+    name: Frontend Unit & E2E Tests
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_API_BASE: http://localhost:8080/api
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Run Jest unit tests
+        working-directory: ./frontend
+        run: npm run test -- --ci --coverage --maxWorkers=2
+
+      - name: Upload frontend coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./frontend/coverage/coverage-final.json
+          flags: frontend
+          name: codecov-frontend
+          fail_ci_if_error: true
+
+      - name: Start backend API for E2E
+        run: |
+          docker compose -f docker/docker-compose.yml up -d backend
+          # Wait for health endpoint
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/api/health | grep '"status":"ok"'; then
+              echo "Backend ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run Cypress E2E tests
+        uses: cypress-io/github-action@v6
+        with:
+          working-directory: ./frontend
+          start: npm run dev
+          wait-on: http://localhost:3000
+          wait-on-timeout: 120
+          browser: chrome
+          headless: true
+          record: false
+
+  openapi-validation:
+    name: OpenAPI Contract Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Spectral
+        run: npm install -g @stoplight/spectral
+
+      - name: Validate OpenAPI spec
+        run: |
+          spectral lint backend/internal/openapi/openapi.yaml \
+            --ruleset @stoplight/spectral/rulesets/openapi3.yaml \
+            --format stylish
+
+  queue-starvation-check:
+    name: GitHub Actions Queue Starvation Check
+    runs-on: ubuntu-latest
+    env:
+      STARVATION_THRESHOLD: 50
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Query pending workflow runs
+        id: queue_check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const threshold = parseInt(process.env.STARVATION_THRESHOLD, 10);
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              status: 'queued',
+              per_page: 100
+            });
+            const queuedCount = runs.data.total_count;
+            core.setOutput('queued', queuedCount);
+            if (queuedCount > threshold) {
+              core.setFailed(`Queue starvation detected: ${queuedCount} jobs queued (threshold ${threshold})`);
+            } else {
+              console.log(`Queue health OK: ${queuedCount} jobs queued`);
+            }
+
+      - name: Send Slack alert on starvation
+        if: failure()
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "text": ":warning: *FinSight CI Queue Starvation* - ${{ steps.queue_check.outputs.queued }} jobs are queued (threshold ${{ env.STARVATION_THRESHOLD }}) in repository `${{ github.repository }}`."
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Aggregate results
+  final:
+    name: CI Summary
+    needs: [lint, test-backend, test-frontend, openapi-validation, queue-starvation-check]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Report job statuses
+        run: |
+          echo "## CI Summary"
+          echo ""
+          echo "| Job | Status |"
+          echo "|-----|--------|"
+          echo "| Lint | ${{ needs.lint.result }} |"
+          echo "| Backend Tests | ${{ needs.test-backend.result }} |"
+          echo "| Frontend Tests | ${{ needs.test-frontend.result }} |"
+          echo "| OpenAPI Validation | ${{ needs.openapi-validation.result }} |"
+          echo "| Queue Starvation Check | ${{ needs.queue-starvation-check.result }} |"
+          echo ""
+          if [[ "${{ needs.lint.result }}" != "success" || "${{ needs.test-backend.result }}" != "success" || "${{ needs.test-frontend.result }}" != "success" || "${{ needs.openapi-validation.result }}" != "success" ]]; then
+            echo "One or more jobs failed."
+            exit 1
+          fi

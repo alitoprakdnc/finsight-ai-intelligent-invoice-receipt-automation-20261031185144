@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.4
+
+############################
+# Builder stage
+############################
+FROM node:20-alpine AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Install only production + dev dependencies needed for build
+# (package-lock.json is expected to be present)
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+# Copy the rest of the source code
+COPY . .
+
+# Disable Next.js telemetry (important for CI/CD)
+ARG NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Lint and type‑check (fails fast if code is not clean)
+RUN npm run lint && npm run type-check
+
+# Build the application
+ENV NODE_ENV=production
+RUN npm run build
+
+# Remove dev‑only packages – keep only what is required at runtime
+RUN npm prune --production
+
+############################
+# Runtime stage
+############################
+FROM node:20-alpine AS runner
+
+# Create a non‑root user for security
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -S -G appgroup -u 1001 appuser
+
+WORKDIR /app
+
+# Environment variables
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Copy only the artifacts needed to run the app
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/package-lock.json ./
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/next.config.js ./
+COPY --from=builder /app/tsconfig.json ./
+# If you keep an example env file, ship it (do NOT ship real secrets)
+COPY --from=builder /app/.env.example ./.env.example
+
+# Expose the port the app runs on
+EXPOSE 3000
+
+# Use dumb-init to correctly handle PID 1 and signal forwarding
+RUN apk add --no-cache dumb-init
+ENTRYPOINT ["dumb-init", "--"]
+
+# Run the Next.js server as a non‑root user
+USER appuser
+
+# Simple health‑check – verifies that the HTTP server responds
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:${PORT}/_next/static/chunks/pages/_app.js || exit 1
+
+# Start the application
+CMD ["npm", "run", "start"]

@@ -1,0 +1,58 @@
+# Exclude version control metadata
+.git
+.gitignore
+
+# Go build artifacts and caches
+bin/
+pkg/
+vendor/
+*.exe
+*.out
+*.test
+coverage.out
+
+# Node.js dependencies and build outputs (frontend)
+frontend/node_modules
+frontend/.next
+frontend/.cache
+frontend/.turbo
+frontend/out
+frontend/dist
+frontend/build
+frontend/.yarn
+frontend/.pnpm-store
+frontend/.npm
+frontend/.npmrc
+
+# Environment files (local only)
+frontend/.env
+frontend/.env.local
+frontend/.env.development
+frontend/.env.production
+
+# Miscellaneous files
+*.log
+*.md
+*.swp
+*.swo
+*.tmp
+*.bak
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# IDE / editor directories
+.idea/
+.vscode/
+*.code-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Docker compose files (not needed in the build context)
+docker-compose.yml
+Dockerfile.*   # keep Dockerfiles needed for build, but ignore other Dockerfile variants if any
+# End of .dockerignore

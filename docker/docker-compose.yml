@@ -1,0 +1,163 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: finsight-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: finsight
+      POSTGRES_PASSWORD: finsight_pass
+      POSTGRES_DB: finsight
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: finsight-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: finsight-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: finsightminio
+      MINIO_ROOT_PASSWORD: finsightminio123
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    container_name: finsight-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # Core configuration – can be overridden by a .env file
+      APP_ENV: development
+      SERVER_PORT: 8080
+      DB_DSN: "postgres://finsight:finsight_pass@postgres:5432/finsight?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "finsightminio"
+      S3_SECRET_KEY: "finsightminio123"
+      S3_BUCKET: "invoices"
+      # Queue configuration – using RabbitMQ in dev (fallback to Cloud Tasks)
+      QUEUE_URL: "amqp://guest:guest@rabbitmq:5672/"
+      # Optional LLM endpoint – disabled by default
+      LLM_ENDPOINT: ""
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app:cached
+    command: ["./server"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    container_name: finsight-worker
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      APP_ENV: development
+      DB_DSN: "postgres://finsight:finsight_pass@postgres:5432/finsight?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "finsightminio"
+      S3_SECRET_KEY: "finsightminio123"
+      S3_BUCKET: "invoices"
+      QUEUE_URL: "amqp://guest:guest@rabbitmq:5672/"
+      LLM_ENDPOINT: ""
+    volumes:
+      - ./backend:/app:cached
+    command: ["./worker"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: finsight-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: finsight-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_BASE: "http://localhost:8080/api"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app:cached
+    command: ["npm", "run", "dev"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
